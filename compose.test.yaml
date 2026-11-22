@@ -1,0 +1,41 @@
+name: clarix-stellar-hub-tests
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: clarix
+      POSTGRES_DB: clarix_tests
+      POSTGRES_HOST_AUTH_METHOD: trust
+    tmpfs: ['/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U clarix -d clarix_tests']
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:8.2-alpine
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  test:
+    image: clarix-stellar-hub-backend:local
+    init: true
+    environment:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://clarix@postgres:5432/clarix_tests?schema=public
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: error
+      BETTER_AUTH_SECRET: test-only-auth-secret-at-least-32-characters
+      APP_ORIGINS: http://localhost:4311,http://127.0.0.1:4311
+      SESSION_COOKIE_SECURE: 'false'
+      ALLOW_REGISTRATION: 'true'
+      EXECUTION_ACCESS: internal_preview
+      STELLAR_HORIZON_URL: http://127.0.0.1:4999
+    command:
+      ['sh', '-c', 'pnpm db:deploy && pnpm db:seed && pnpm test && node scripts/integration.mjs']
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }

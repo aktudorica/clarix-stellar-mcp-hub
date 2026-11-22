@@ -1,0 +1,34 @@
+# Use together with compose.yaml; runtime and dependencies stay inside Docker.
+services:
+  api:
+    command: ['pnpm', '--filter', '@clarix/api', 'dev']
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./apps/api/src:/app/apps/api/src:ro
+  worker:
+    command: ['pnpm', '--filter', '@clarix/worker', 'dev']
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./apps/worker/src:/app/apps/worker/src:ro
+  web:
+    image: clarix-stellar-hub-web-dev:local
+    build:
+      target: backend
+    command: ['pnpm', '--filter', '@clarix/web', 'dev']
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./apps/web/src:/app/apps/web/src:ro
+      - ./apps/web/public:/app/apps/web/public:ro
+      - ./apps/web/index.html:/app/apps/web/index.html:ro
+      - ./apps/web/vite.config.ts:/app/apps/web/vite.config.ts:ro
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]

@@ -1,0 +1,27 @@
+{
+  "name": "@clarix/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/main.js",
+    "dev": "tsx watch --clear-screen=false src/main.ts"
+  },
+  "dependencies": {
+    "@clarix/application": "workspace:*",
+    "@clarix/database": "workspace:*",
+    "@clarix/stellar": "workspace:*",
+    "@clarix/platform": "workspace:*",
+    "@nestjs/common": "12.1.0",
+    "@nestjs/core": "12.1.0",
+    "@nestjs/bullmq": "12.0.0",
+    "bullmq": "^5.61.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6"
+  }
+}

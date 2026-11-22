@@ -1,0 +1,171 @@
+name: clarix-stellar-hub
+
+x-backend: &backend
+  image: clarix-stellar-hub-backend:local
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+    target: backend
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://clarix:${POSTGRES_PASSWORD:?Run ./scripts/start.sh first}@postgres:5432/clarix_hub?schema=public
+  REDIS_URL: redis://redis:6379/0
+  X402_ENABLED: ${X402_ENABLED:-false}
+  X402_PAY_TO: ${X402_PAY_TO:-}
+  X402_PRICE_USDC: ${X402_PRICE_USDC:-0.01}
+  OZ_API_KEY: ${OZ_API_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Run ./scripts/start.sh first}
+  AUTH_BASE_URL: http://localhost:${WEB_PORT:-4311}
+  APP_ORIGINS: http://localhost:${WEB_PORT:-4311},http://127.0.0.1:${WEB_PORT:-4311}
+  SESSION_COOKIE_SECURE: 'false'
+  ALLOW_REGISTRATION: 'true'
+  EXECUTION_ACCESS: internal_preview
+  STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: clarix_hub
+      POSTGRES_USER: clarix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run ./scripts/start.sh first}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U clarix -d clarix_hub']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: '3' }
+
+  redis:
+    image: redis:8.2-alpine
+    restart: unless-stopped
+    command:
+      [
+        'redis-server',
+        '--appendonly',
+        'yes',
+        '--appendfsync',
+        'everysec',
+        '--maxmemory',
+        '256mb',
+        '--maxmemory-policy',
+        'noeviction',
+      ]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: '3' }
+
+  migrate:
+    <<: *backend
+    restart: 'no'
+    environment:
+      <<: *backend-env
+      SERVICE_NAME: migrate
+    command: ['sh', '-c', 'pnpm db:deploy && pnpm db:seed']
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  worker:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      SERVICE_NAME: worker
+    command: ['node', 'apps/worker/dist/main.js']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/worker-health.mjs']
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+
+  api:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      SERVICE_NAME: api
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai-compatible}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_ENABLE_THINKING: ${LLM_ENABLE_THINKING:-true}
+      LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-16384}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-180000}
+    ports:
+      - '127.0.0.1:${API_PORT:-4310}:3000'
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      worker: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  web:
+    image: clarix-stellar-hub-web:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: web
+    restart: unless-stopped
+    init: true
+    ports:
+      - '127.0.0.1:${WEB_PORT:-4311}:8080'
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--spider', 'http://127.0.0.1:8080/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: '3' }
+
+volumes:
+  postgres_data:
+  redis_data:

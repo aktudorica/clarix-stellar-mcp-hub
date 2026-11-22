@@ -1,0 +1,271 @@
+generator client {
+  provider = "prisma-client"
+  output = "../src/generated/prisma"
+  moduleFormat = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ServiceStatus {
+  PLANNED
+  ACTIVE
+  DISABLED
+}
+
+model Provider {
+  id        String   @id @default(uuid()) @db.Uuid
+  slug      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  services  ServiceDefinition[]
+}
+
+model ServiceDefinition {
+  id           String        @id @default(uuid()) @db.Uuid
+  slug         String        @unique
+  name         String
+  description  String
+  category     String
+  status       ServiceStatus @default(PLANNED)
+  network      String        @default("stellar:testnet")
+  capabilities String[]
+  providerId   String        @db.Uuid
+  provider     Provider      @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  versions     ServiceVersion[]
+
+  @@index([providerId])
+  @@index([status, category])
+}
+
+// Infrastructure verification records, never presented as paid executions.
+model SystemProbe {
+  id          String   @id @db.Uuid
+  completedAt DateTime @default(now())
+  workerId    String
+}
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  email String @unique
+  name String
+  passwordHash String? // Retained for rollback; Better Auth credentials live in AuthAccount.
+  emailVerified Boolean @default(false)
+  image String?
+  updatedAt DateTime @default(now()) @updatedAt
+  authAccounts AuthAccount[]
+  authSessions AuthSession[]
+  createdAt DateTime @default(now())
+  memberships WorkspaceMember[]
+  sessions Session[]
+}
+
+model Workspace {
+  id String @id @default(uuid()) @db.Uuid
+  name String
+  createdAt DateTime @default(now())
+  memberships WorkspaceMember[]
+  sessions Session[]
+  executions Execution[]
+  agentRuns AgentRun[]
+  paymentOrders PaymentOrder[]
+}
+
+model WorkspaceMember {
+  userId String @db.Uuid
+  workspaceId String @db.Uuid
+  role String @default("OWNER")
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@id([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+model Session {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  csrfToken String
+  userId String @db.Uuid
+  workspaceId String @db.Uuid
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@index([expiresAt])
+  @@index([userId])
+  @@index([workspaceId])
+}
+
+model ServiceVersion {
+  id String @id @default(uuid()) @db.Uuid
+  serviceId String @db.Uuid
+  version Int
+  implementation String
+  inputSchema Json
+  outputSchema Json
+  createdAt DateTime @default(now())
+  service ServiceDefinition @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  executions Execution[]
+  paymentOrders PaymentOrder[]
+  @@unique([serviceId, version])
+}
+
+enum ExecutionStatus {
+  QUEUED
+  RUNNING
+  RETRYING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+model Execution {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  createdBy String @db.Uuid
+  serviceVersionId String @db.Uuid
+  idempotencyKey String
+  inputFingerprint String
+  input Json
+  status ExecutionStatus @default(QUEUED)
+  accessMode String @default("INTERNAL_PREVIEW")
+  result Json?
+  errorCode String?
+  errorMessage String?
+  attempts Int @default(0)
+  leaseToken String? @db.Uuid
+  leaseUntil DateTime?
+  createdAt DateTime @default(now())
+  startedAt DateTime?
+  finishedAt DateTime?
+  updatedAt DateTime @updatedAt
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  serviceVersion ServiceVersion @relation(fields: [serviceVersionId], references: [id], onDelete: Restrict)
+  paymentOrder PaymentOrder?
+  attemptRecords ExecutionAttempt[]
+  events ExecutionEvent[]
+  outbox OutboxMessage[]
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, createdAt, id])
+  @@index([status, leaseUntil])
+}
+
+model ExecutionAttempt {
+  id String @id @default(uuid()) @db.Uuid
+  executionId String @db.Uuid
+  number Int
+  leaseToken String @unique @db.Uuid
+  status String @default("RUNNING")
+  startedAt DateTime @default(now())
+  finishedAt DateTime?
+  errorCode String?
+  execution Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  @@unique([executionId, number])
+}
+
+model ExecutionEvent {
+  id BigInt @id @default(autoincrement())
+  executionId String @db.Uuid
+  type String
+  message String
+  createdAt DateTime @default(now())
+  execution Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  @@index([executionId, id])
+}
+
+model OutboxMessage {
+  id String @id @default(uuid()) @db.Uuid
+  executionId String @db.Uuid
+  availableAt DateTime @default(now())
+  dispatchedAt DateTime?
+  claimToken String? @db.Uuid
+  claimedUntil DateTime?
+  createdAt DateTime @default(now())
+  execution Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  @@index([dispatchedAt, availableAt, claimedUntil])
+  @@index([executionId])
+}
+
+model AuthAccount {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String
+  providerId String
+  userId String @db.Uuid
+  password String?
+  accessToken String?
+  refreshToken String?
+  idToken String?
+  accessTokenExpiresAt DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+model AuthSession {
+  id String @id @default(uuid()) @db.Uuid
+  token String @unique
+  userId String @db.Uuid
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuthVerification {
+  id String @id @default(uuid()) @db.Uuid
+  identifier String
+  value String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([identifier])
+}
+
+model AgentRun {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  createdBy String @db.Uuid
+  prompt String
+  status String @default("RUNNING")
+  output Json?
+  createdAt DateTime @default(now())
+  finishedAt DateTime?
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@index([workspaceId, createdAt])
+}
+
+model PaymentOrder {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  createdBy String @db.Uuid
+  serviceVersionId String @db.Uuid
+  request Json
+  inputFingerprint String
+  idempotencyKey String
+  requirement Json
+  serviceVersion ServiceVersion @relation(fields: [serviceVersionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  execution Execution? @relation(fields: [executionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  status String @default("QUOTED")
+  payloadHash String? @unique
+  transactionHash String? @unique
+  settlement Json?
+  executionId String? @unique @db.Uuid
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, status])
+}
